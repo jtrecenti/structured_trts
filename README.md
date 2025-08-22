@@ -31,7 +31,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ```bash
 # Clone o repositório
-git clone <url-do-repositorio>
+git clone https://github.com/jtrecenti/structured_trts
 cd structured_trts
 
 # Sincronizar dependências com uv
@@ -129,30 +129,7 @@ structured_trts/
 └── README.md           # Este arquivo
 ```
 
-## 🎯 Como usar
-
-### 1. Preparar os dados
-
-Coloque seus arquivos de dados na pasta `data/`. O sistema espera arquivos Parquet com colunas de texto para processar.
-
-### 2. Executar notebooks
-
-**Opção A: Via VS Code/Cursor**
-
-1. Abra o arquivo `.qmd` desejado
-2. Execute as células uma por uma ou todas de uma vez
-
-**Opção B: Via terminal**
-
-```bash
-# Ativar ambiente se não estiver ativo
-uv run python -m jupyter lab
-
-# Ou executar diretamente com quarto (se instalado)
-quarto render notebooks/1-extract-loop.qmd
-```
-
-### 3. Workflow típico
+### Workflow típico
 
 1. **Leitura de dados** (`0-read.qmd`):
    - Carrega e processa os textos
@@ -168,9 +145,9 @@ quarto render notebooks/1-extract-loop.qmd
    - Gera visualizações
    - Calcula métricas de performance
 
-### 4. Modelos disponíveis
+### Modelos utilizados
 
-O sistema suporta múltiplos provedores:
+O sistema utiliza os seguintes modelos:
 
 - **OpenAI**: GPT-4.1, GPT-4.1-mini, GPT-4.1-nano
 - **Google**: Gemini 2.5 Pro, Gemini 2.5 Flash  
@@ -191,7 +168,6 @@ text = "Sua sentença trabalhista aqui..."
 result = extract_with_chatlas(text, prompt, "gpt-4.1-mini")
 
 if result.success:
-    print("Extração bem-sucedida!")
     print(result.extracted_data)
 else:
     print(f"Erro: {result.error_message}")
@@ -219,44 +195,3 @@ uv sync --upgrade
 uv tree --outdated
 ```
 
-## 🐛 Troubleshooting
-
-### Problema: Erro de importação de módulos
-
-**Solução**: Certifique-se de que o ambiente virtual está ativo e execute `uv sync`
-
-### Problema: Chaves de API não encontradas
-
-**Solução**: Verifique se o arquivo `.env` está na raiz do projeto e contém as chaves corretas
-
-### Problema: Jupyter não encontra o kernel
-
-**Solução**:
-
-```bash
-uv run python -m ipykernel install --user --name structured_trts
-```
-
-### Problema: Erro de tokens/contexto muito grande
-
-**Solução**: Ajuste o parâmetro `max_tokens` nas funções de extração ou use textos menores
-
-## 📝 Contribuindo
-
-1. Fork o projeto
-2. Crie uma branch para sua feature (`git checkout -b feature/nova-feature`)
-3. Commit suas mudanças (`git commit -am 'Adiciona nova feature'`)
-4. Push para a branch (`git push origin feature/nova-feature`)
-5. Abra um Pull Request
-
-## 📄 Licença
-
-Este projeto está sob a licença [especificar licença].
-
-## 🤝 Suporte
-
-Para dúvidas ou problemas:
-
-1. Verifique a seção de troubleshooting acima
-2. Abra uma issue no repositório
-3. Consulte a documentação dos provedores de LLM para problemas de API
