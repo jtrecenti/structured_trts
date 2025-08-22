@@ -1,6 +1,6 @@
 ---
-title: "Untitled"
-format: html
+title: "Explore extraction results"
+format: gfm
 ---
 
 
@@ -9,14 +9,17 @@ import pandas as pd
 from pathlib import Path
 import os
 
-base_dir = Path(__file__).parent.parent
+# Get the base directory (parent of notebooks folder)
+base_dir = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
 
+# Check if data/extracted directory exists
+extracted_dir = base_dir / "data/extracted"
 dfs = []
-for f in os.listdir(base_dir / "data/extracted"):
-    df = pd.read_parquet(base_dir / "data/extracted" / f)
-    dfs.append(df)
+for f in os.listdir(extracted_dir):
+    if f.endswith('.parquet'):
+        df = pd.read_parquet(extracted_dir / f)
+        dfs.append(df)
     
-
 df_final = pd.concat(dfs, ignore_index=True)
 df_final.to_parquet(base_dir / "data/extracted_sample_10.parquet", index=False)
 ```
