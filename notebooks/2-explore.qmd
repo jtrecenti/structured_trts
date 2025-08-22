@@ -20,3 +20,20 @@ for f in os.listdir(base_dir / "data/extracted"):
 df_final = pd.concat(dfs, ignore_index=True)
 df_final.to_parquet(base_dir / "data/extracted_sample_10.parquet", index=False)
 ```
+
+
+```{python}
+df_success_time = (
+    df_final
+    .groupby('model_name')
+    .agg(
+        n = ('success', 'count'),
+        success_rate = ('success', 'mean'),
+        avg_extraction_time_seconds = ('extraction_time_seconds', 'mean')
+    )
+    .reset_index()
+    .sort_values('success_rate', ascending=False)
+)
+
+df_success_time
+```
