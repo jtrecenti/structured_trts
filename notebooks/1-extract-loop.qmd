@@ -1,0 +1,327 @@
+---
+title: "Extract structured data from text"
+format: html
+---
+
+```{python}
+from pathlib import Path
+import pandas as pd
+import numpy as np
+from tqdm import tqdm
+import plotnine as p9
+import json
+from structured_trts.extract import (
+    run_extraction_batch, 
+    MODEL_CONFIGS,
+    extract_with_chatlas,
+    load_prompt
+)
+import warnings
+from dotenv import load_dotenv
+load_dotenv()
+warnings.filterwarnings('ignore')
+```
+
+## Load Data
+
+```{python}
+base_dir = Path(__file__).parent.parent
+data_path = base_dir / "data/textos_completo.parquet"
+prompt_path = base_dir / "prompts/prompt.md"
+
+# Load the processed texts
+df = pd.read_parquet(data_path)
+
+print(f"Total documents: {len(df)}")
+print(f"Documents with enc_len < 120000: {len(df[df['enc_len'] < 120000])}")
+print(f"Documents with enc_len_sentencas < 120000: {len(df[df['enc_len_sentencas'] < 120000])}")
+```
+
+## Model Configuration
+
+```{python}
+# Available models for evaluation
+available_models = list(MODEL_CONFIGS.keys())
+print("Available models:")
+for model in available_models:
+    config = MODEL_CONFIGS[model]
+    print(f"  - {model}: {config.name} ({config.provider})")
+
+# Select models to test (you can modify this list)
+models_to_test = [
+    "gpt-4.1-mini",  # Start with faster/cheaper models
+    "gemini-2.5-flash",
+    "gpt-oss-20b",
+    "llama-4-scout"
+    # Add more models as needed
+]
+
+print(f"\nModels selected for testing: {models_to_test}")
+```
+
+## Test with Chatlas
+
+```{python}
+# chatlas test
+prompt = load_prompt(str(prompt_path))
+row = df[df.index == 3]
+txt = row['txt'].iloc[0]
+result = extract_with_chatlas(txt, prompt, "llama-4-scout")
+```
+
+extracted_data to json
+
+```{python}
+print(df_result['error_message'].iloc[0])
+```
+
+```{python}
+df_result = pd.DataFrame([result.model_dump()])
+df_result['input_type'] = 'full_text'
+df_result['processo'] = row['processo'].iloc[0]
+df_result['extracted_data'] = json.loads(result.extracted_data.model_dump_json())
+file_name = base_dir / f"data/{row['processo'].iloc[0]}_full_text.parquet"
+df_result.to_parquet(file_name)
+```
+
+## Full Text Extraction
+
+```{python}
+amostra = df[df['enc_len'] < 120000].copy()
+amostra = amostra.sample(n=10, random_state=42)
+
+prompt = load_prompt(str(prompt_path))
+
+for index, row in amostra.iterrows():
+    print(f"Processing {row['processo']}...")
+    print(f"Input tokens: {row['enc_len']}")
+    for tipo in ['full_text', 'sentences_only']:
+        print(f"Processing {tipo}...")
+        txt = row['txt'] if tipo == 'full_text' else row['txt_sentencas']
+        df_all = []
+        f = base_dir / f"data/extracted/{row['processo']}_{tipo}.parquet"
+        if not f.exists():
+            for model in available_models:
+                print(f"Processing {model}...")
+                result = extract_with_chatlas(txt, prompt, model)
+                df_result = pd.DataFrame([result.model_dump()])
+                if result.success:
+                    df_result['extracted_data'] = [json.loads(result.extracted_data.model_dump_json())]
+                df_result['input_type'] = tipo
+                df_result['processo'] = row['processo']
+                df_all.append(df_result)
+            df_all = pd.concat(df_all, ignore_index=True)
+            df_all.to_parquet(f, index=False)
+```
+
+```{python}
+# Filter documents by token count for full text analysis
+df_txt_filtered = df[df['enc_len'] < 120000].copy()
+
+print(f"Processing {len(df_txt_filtered)} documents with full text...")
+
+# Run extraction batch for full texts
+if len(df_txt_filtered) > 0:
+    results_txt = run_extraction_batch(
+        df=df_txt_filtered,
+        text_column='txt',
+        prompt_path=str(prompt_path),
+        models=models_to_test,
+        max_tokens=120000,
+        output_path=str(base_dir / "data/extraction_results_txt.parquet")
+    )
+    
+    print(f"Full text extraction completed. Results shape: {results_txt.shape}")
+    
+    # Summary statistics
+    success_rate = results_txt.groupby('model_name')['success'].mean()
+    avg_input_tokens = results_txt.groupby('model_name')['input_tokens'].mean()
+    avg_output_tokens = results_txt.groupby('model_name')['output_tokens'].mean()
+    avg_time = results_txt.groupby('model_name')['extraction_time_seconds'].mean()
+    
+    summary_txt = pd.DataFrame({
+        'success_rate': success_rate,
+        'avg_input_tokens': avg_input_tokens,
+        'avg_output_tokens': avg_output_tokens,
+        'avg_time_seconds': avg_time
+    }).round(3)
+    
+    print("\nFull Text Results Summary:")
+    print(summary_txt)
+else:
+    print("No documents available for full text extraction")
+    results_txt = pd.DataFrame()
+```
+
+## Results Analysis
+
+```{python}
+# Combine results for comparison
+if not results_txt.empty:
+    results_txt['text_type'] = 'full_text'
+    
+    all_results = results_txt.copy()
+    
+    # Save combined results
+    all_results.to_parquet(base_dir / "data/extraction_results_combined.parquet", index=False)
+    
+    print(f"Combined results shape: {all_results.shape}")
+    
+    # Success rate comparison
+    success_comparison = (
+        all_results
+        .groupby(['model_name', 'text_type'])['success']
+        .mean()
+        .reset_index()
+    )
+    
+    print("\nSuccess Rate Comparison:")
+    print(success_comparison.pivot(index='model_name', columns='text_type', values='success').round(3))
+    
+else:
+    print("No results available for analysis")
+    all_results = pd.DataFrame()
+```
+
+## Cost Analysis
+
+```{python}
+if not all_results.empty:
+    # Approximate cost calculation (you'll need to update with actual pricing)
+    cost_per_1k_tokens = {
+        'OpenAI GPT-4.1': {'input': 0.03, 'output': 0.06},
+        'OpenAI GPT-4.1-mini': {'input': 0.0015, 'output': 0.006},
+        'Gemini 2.5 Pro': {'input': 0.00125, 'output': 0.005},
+        'Gemini 2.5 Flash': {'input': 0.000075, 'output': 0.0003},
+    }
+    
+    def calculate_cost(row):
+        model_name = row['model_name']
+        if model_name in cost_per_1k_tokens:
+            rates = cost_per_1k_tokens[model_name]
+            input_cost = (row['input_tokens'] / 1000) * rates['input']
+            output_cost = (row['output_tokens'] / 1000) * rates['output']
+            return input_cost + output_cost
+        return 0
+    
+    all_results['estimated_cost_usd'] = all_results.apply(calculate_cost, axis=1)
+    
+    # Cost summary
+    cost_summary = (
+        all_results
+        .groupby(['model_name', 'text_type'])
+        .agg({
+            'estimated_cost_usd': ['sum', 'mean'],
+            'success': 'mean',
+            'extraction_time_seconds': 'mean'
+        })
+        .round(4)
+    )
+    
+    print("\nCost and Performance Summary:")
+    print(cost_summary)
+```
+
+## Visualization
+
+```{python}
+if not all_results.empty:
+    # Success rate by model and text type
+    success_plot = (
+        p9.ggplot(all_results, p9.aes(x='model_name', y='success', fill='text_type')) +
+        p9.geom_col(position='dodge') +
+        p9.theme(axis_text_x=p9.element_text(rotation=45, hjust=1)) +
+        p9.labs(
+            title="Success Rate by Model and Text Type",
+            x="Model",
+            y="Success Rate",
+            fill="Text Type"
+        )
+    )
+    
+    print(success_plot)
+```
+
+```{python}
+if not all_results.empty:
+    # Token usage comparison
+    token_plot = (
+        p9.ggplot(all_results, p9.aes(x='input_tokens', y='output_tokens', color='model_name')) +
+        p9.geom_point(alpha=0.6) +
+        p9.facet_wrap('~text_type') +
+        p9.labs(
+            title="Input vs Output Tokens by Model",
+            x="Input Tokens",
+            y="Output Tokens",
+            color="Model"
+        )
+    )
+    
+    print(token_plot)
+```
+
+## Error Analysis
+
+```{python}
+if not all_results.empty:
+    # Analyze failed extractions
+    failed_results = all_results[~all_results['success']].copy()
+    
+    if len(failed_results) > 0:
+        print(f"\nFailed extractions: {len(failed_results)}")
+        
+        error_summary = (
+            failed_results
+            .groupby(['model_name', 'text_type'])
+            .size()
+            .reset_index(name='count')
+        )
+        
+        print("\nFailures by model and text type:")
+        print(error_summary)
+        
+        # Sample error messages
+        print("\nSample error messages:")
+        for error in failed_results['error_message'].dropna().unique()[:5]:
+            print(f"- {error}")
+    else:
+        print("No failed extractions!")
+```
+
+## Export Summary Report
+
+```{python}
+if not all_results.empty:
+    # Create summary report
+    report = {
+        'total_documents_processed': len(all_results['processo'].unique()),
+        'total_extractions': len(all_results),
+        'overall_success_rate': all_results['success'].mean(),
+        'models_tested': all_results['model_name'].unique().tolist(),
+        'text_types': all_results['text_type'].unique().tolist(),
+        'total_estimated_cost_usd': all_results['estimated_cost_usd'].sum(),
+        'average_processing_time_seconds': all_results['extraction_time_seconds'].mean()
+    }
+    
+    print("\n" + "="*50)
+    print("EXTRACTION SUMMARY REPORT")
+    print("="*50)
+    
+    for key, value in report.items():
+        if isinstance(value, float):
+            print(f"{key}: {value:.4f}")
+        elif isinstance(value, list):
+            print(f"{key}: {', '.join(map(str, value))}")
+        else:
+            print(f"{key}: {value}")
+    
+    # Save detailed results
+    print(f"\nDetailed results saved to:")
+    print(f"- {base_dir / 'data/extraction_results_combined.parquet'}")
+    
+    # Save summary
+    import json
+    with open(base_dir / "data/extraction_summary.json", 'w') as f:
+        json.dump(report, f, indent=2, default=str)
+    
+    print(f"- {base_dir / 'data/extraction_summary.json'}")

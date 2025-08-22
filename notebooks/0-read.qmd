@@ -1,0 +1,139 @@
+---
+title: "Read and build datasets"
+format: html
+---
+
+
+```{python}
+from pathlib import Path
+import re
+import pandas as pd
+from tqdm import tqdm
+from structured_trts.utils import ler_arquivo, contar_tokens, ler_arquivo_json, clean_metadata, juntar_com_separador, adicionar_metadados_ao_texto
+import plotnine as p9
+
+base_dir = Path(__file__).parent.parent
+rawdata_dir = base_dir / "data/cpopg_amostra_jusbr/"
+
+```
+
+## Leitura dos textos
+
+```{python}
+# lista recursiva de arquivos contendo "docs/" no caminho
+arquivos = [str(p) for p in rawdata_dir.rglob("*") if p.is_file() and "docs/" in str(p).replace("\\", "/")]
+df = pd.DataFrame({"value": arquivos})
+
+# extrai sequência de 20 dígitos do caminho
+df["processo"] = df["value"].str.extract(r"([0-9]{20})", expand=False)
+
+tqdm.pandas(desc="Lendo arquivos")
+df["txt"] = df["value"].progress_apply(ler_arquivo)
+
+mask_ok = ~df["txt"].str.contains(r"Too Many Requests|%PDF", regex=True)
+
+df_ok = df[mask_ok]
+
+txt_path = base_dir / "data/textos.parquet"
+df_ok.to_parquet(txt_path, index=False)
+```
+
+## Leitura dos metadados
+
+```{python}
+# lista todos os arquivos com extensão ".json"
+arquivos = [str(p) for p in rawdata_dir.rglob("*") if p.is_file() and p.suffix == ".json"]
+df_metadata = pd.DataFrame({"value": arquivos})
+
+# extrai sequência de 20 dígitos do caminho
+df_metadata["processo"] = df_metadata["value"].str.extract(r"([0-9]{20})", expand=False)
+
+tqdm.pandas(desc="Lendo arquivos")
+df_metadata["metadata"] = df_metadata["value"].progress_apply(ler_arquivo_json)
+
+# considerar apenas o grau com sigla G1
+df_metadata["metadata"] = df_metadata["metadata"].apply(clean_metadata)
+
+metadata_path = base_dir / "data/metadata.parquet"
+df_metadata.to_parquet(metadata_path, index=False)
+```
+
+## Juntar textos
+
+A ideia é dividir os textos em 2 tipos:
+
+1. **Texto completo**: são os textos_join que já fizemos
+2. **Heurística nome de arquivo**: apenas textos com título 'sentença' e 'audiência'.
+
+```{python}
+txt_path = base_dir / "data/textos.parquet"
+metadata_path = base_dir / "data/metadata.parquet"
+df_txt = pd.read_parquet(txt_path)
+df_metadata = pd.read_parquet(metadata_path)
+
+textos_join = (
+    df_txt
+    .groupby("processo", dropna=False)
+    .apply(juntar_com_separador, include_groups=False)
+    .reset_index()
+)
+
+```
+
+```{python}
+# juntando com base de metadados
+df_completo = df_metadata.merge(textos_join, on="processo", how="inner")
+
+# Aplicar a função
+df_completo[['txt', 'txt_sentencas']] = df_completo.apply(adicionar_metadados_ao_texto, axis=1)
+```
+
+## Contagem de tokens
+
+```{python}
+tqdm.pandas(desc="Tokenizando")
+df_completo["enc_len"] = df_completo["txt"].progress_apply(contar_tokens)
+df_completo["enc_len_sentencas"] = df_completo["txt_sentencas"].progress_apply(contar_tokens)
+
+out_path = base_dir / "data/textos_completo.parquet"
+df_completo.to_parquet(out_path, index=False)
+```
+
+```{python}
+(
+    p9.ggplot(df_completo, p9.aes(x="enc_len")) + 
+    p9.geom_histogram(bins=50) +
+    p9.labs(title="Distribuição de tokens")
+)
+```
+
+```{python}
+(
+    p9.ggplot(df_completo, p9.aes(x="enc_len_sentencas")) + 
+    p9.geom_histogram(bins=50) +
+    p9.labs(title="Distribuição de tokens")
+)
+```
+
+```{python}
+len(df_completo.query("enc_len_sentencas > 120000"))
+```
+
+## Lista de todos os possíveis assuntos
+
+```{python}
+todos_assuntos = []
+for idx, row in df_completo.iterrows():
+    assunto_list = row['metadata'][0]['assunto']
+    for assunto_dict in assunto_list:
+        todos_assuntos.append(assunto_dict)
+
+df_assuntos = pd.DataFrame(todos_assuntos)
+df_assuntos = df_assuntos.drop_duplicates('codigo')
+```
+
+
+```{python}
+import json
+print(json.dumps(df_assuntos.to_dict(orient='records'), indent=2, ensure_ascii=False))
+```

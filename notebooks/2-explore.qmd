@@ -1,0 +1,22 @@
+---
+title: "Untitled"
+format: html
+---
+
+
+```{python}
+import pandas as pd
+from pathlib import Path
+import os
+
+base_dir = Path(__file__).parent.parent
+
+dfs = []
+for f in os.listdir(base_dir / "data/extracted"):
+    df = pd.read_parquet(base_dir / "data/extracted" / f)
+    dfs.append(df)
+    
+
+df_final = pd.concat(dfs, ignore_index=True)
+df_final.to_parquet(base_dir / "data/extracted_sample_10.parquet", index=False)
+```
