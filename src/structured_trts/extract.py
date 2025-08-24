@@ -15,6 +15,10 @@ import pandas as pd
 
 # ---------- Enums: taxonomias e estados ----------
 
+
+class Gratuidade(Enum):
+    CONCEDIDA = "concedida"
+    NAO_CONCEDIDA = "nao_concedida" 
 class DecisionType(Enum):
     SENTENCA_MERITO = "sentenca_merito"
     HOMOLOGACAO_ACORDO = "homologacao_acordo"
@@ -184,10 +188,11 @@ class ClaimDecision(BaseModel):
     outcome: DecisionOutcome
     awarded_value: Optional[Money]
     reflexos: Optional[Reflexos]
-
 class LaborSentenceExtraction(BaseModel):
     decision_type: DecisionType
     claims: List[ClaimDecision]
+    custas: Optional[Money]
+    gratuidade: Optional[Gratuidade]
 
 class ExtractionResult(BaseModel):
     """Result of extraction with metadata about the process."""

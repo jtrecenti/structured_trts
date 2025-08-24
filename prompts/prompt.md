@@ -34,6 +34,8 @@ Para cada pedido identificado, extraia:
 - Resultado da decisão (procedente, improcedente, parcialmente_procedente, prejudicado)
 - Valor de indenização
 - Reflexos (sim ou nao)
+- Gratuidade (se foi deferida ou não)
+- Custas (valor que foi calculado)
 
 ## Exemplo de Estrutura JSON de saída
 
@@ -61,7 +63,15 @@ Para cada pedido identificado, extraia:
       },
       "reflexos": 'nao'
     }
-  ]
+  ],
+  "gratuidade": "sim",
+  "custas": {
+    "awarded_value": {
+      "amount": 5802,
+      "currency": "BRL",
+      "is_liquidacao": true
+    }
+  }
 }
 ```
 
