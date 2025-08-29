@@ -170,7 +170,7 @@ df_cost['avg_cost'] = df_cost['avg_cost'].astype(float)
     p9.labs(
         subtitle="Custo varia de acordo com tamanho do modelo",
         x="Modelo",
-        y="Custo médio (USD)",
+        y="Custo médio por processo (USD)",
         fill="Provider"
     )
 )
@@ -241,22 +241,26 @@ df_accuracy_cost = (
     .agg(accuracy = ('accuracy', 'mean'))
     .reset_index()
     .merge(df_cost, on=['model_name', 'provider'])
+    # wrap 20 characters
+    .assign(model_name = lambda x: x['model_name'].str.wrap(10))
 )
 
 df_accuracy_cost
 
 (
-    p9.ggplot(df_accuracy_cost, p9.aes(x='avg_cost', y='accuracy', color='model_name', shape='provider')) +
-    p9.geom_point(size=5) +
-    p9.theme_bw() +
+    p9.ggplot(df_accuracy_cost, p9.aes(x='avg_cost', y='accuracy', color='provider')) +
+    p9.geom_point(size=1) +
+    p9.geom_text(p9.aes(label='model_name'), size=9) +
+    p9.theme_minimal() +
     p9.scale_x_continuous(labels=lambda x: [f'${y:.2f}' for y in x]) +
     p9.scale_y_continuous(labels=lambda x: [f'{int(y*100)}%' for y in x]) +
+    p9.scale_color_manual(values=['#1f77b4', '#ff7f0e', '#2c602c']) +
+    p9.theme(legend_position='bottom') +
     p9.labs(
-        subtitle="Acurácia por custo",
+        subtitle="Acurácia X Custo",
         x="Custo médio (USD)",
         y="Acurácia (%)",
-        color="Modelo",
-        shape="Provider"
+        color="Provider"
     )
 )
 ```
