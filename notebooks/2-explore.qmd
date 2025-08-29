@@ -8,10 +8,261 @@ format: gfm
 import pandas as pd
 from pathlib import Path
 import os
+from dotenv import load_dotenv
+load_dotenv()
+import plotnine as p9
+import psycopg2
+import psycopg2.extras
 
 # Get the base directory (parent of notebooks folder)
 base_dir = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+```
 
+```{python}
+# read runs df from data/extracted/*.parquet
+parquet_files = base_dir / "data/extracted"
+dfs = []
+for f in os.listdir(parquet_files):
+    if f.endswith('.parquet'):
+        df = pd.read_parquet(parquet_files / f)
+        dfs.append(df)
+    
+df_runs = (
+    pd.concat(dfs, ignore_index=True)
+    .drop_duplicates(['processo', 'model_name'])
+    .filter(['processo', 'model_name', 'success', 'extraction_time_seconds', 'input_tokens', 'output_tokens', 'provider'])
+)
+df_runs
+
+```
+
+```{python}
+# Read data from NEON db
+con = psycopg2.connect(os.getenv('NEON_DB'))
+cur = con.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+cur.execute('SELECT * FROM validations')
+validations = cur.fetchall()
+validations_df = pd.DataFrame(validations)
+
+validations_df = (
+    validations_df
+    .sort_values('timestamp', ascending=False)
+    .drop_duplicates(['processo', 'model_name'])
+)
+
+validations_df.head()
+
+df = pd.merge(df_runs, validations_df, on=['processo', 'model_name'], how='left')
+df
+```
+
+## Success rate
+
+```{python}
+import numpy as np
+df_success_rate = (
+    df
+    .groupby(['model_name', 'provider'])
+    .agg(
+        n = ('success', 'count'),
+        success_rate = ('success', 'mean')
+    )
+    .reset_index()
+    .sort_values('success_rate', ascending=False)
+)
+df_success_rate['provider'] = np.select(
+    [df_success_rate['provider'] == 'openai', df_success_rate['provider'] == 'gemini'],
+    ['OpenAI', 'Google Gemini'],
+    'Groq (OS models)'
+)
+(
+    p9.ggplot(df_success_rate, p9.aes(x='reorder(model_name, -success_rate)', y='success_rate', fill = 'provider')) +
+    p9.geom_bar(stat='identity') +
+    p9.theme_minimal() +
+    p9.theme(axis_text_x=p9.element_text(rotation=45, hjust=1)) +
+    p9.scale_fill_manual(values=['#1f77b4', '#ff7f0e', '#2c602c']) +
+    p9.scale_y_continuous(labels=lambda x: [f'{int(y*100)}%' for y in x]) +
+    p9.labs(
+        subtitle="Modelos fechados apresentam maiores taxas de sucesso",
+        x="Modelo",
+        y="Proporção de sucesso (%)",
+        fill="Provider"
+    )
+)
+
+```
+
+## Extraction time (valid output)
+
+```{python}
+df_success_time = (
+    df
+    .query('success == True')
+    .groupby(['model_name', 'provider'])
+    .agg(
+        n = ('success', 'count'),
+        success_rate = ('success', 'mean'),
+        avg_extraction_time_seconds = ('extraction_time_seconds', 'mean')
+    )
+    .reset_index()
+    .sort_values('success_rate', ascending=False)
+)
+df_success_time['provider'] = np.select(
+    [df_success_time['provider'] == 'openai', df_success_time['provider'] == 'gemini'],
+    ['OpenAI', 'Google Gemini'],
+    'Groq (OS models)'
+)
+(
+    p9.ggplot(df_success_time, p9.aes(x='reorder(model_name, -avg_extraction_time_seconds)', y='avg_extraction_time_seconds', fill = 'provider')) +
+    p9.geom_bar(stat='identity') +
+    p9.theme_minimal() +
+    p9.theme(axis_text_x=p9.element_text(rotation=45, hjust=1)) +
+    p9.scale_fill_manual(values=['#1f77b4', '#ff7f0e', '#2c602c']) +
+    p9.labs(
+        subtitle="Modelos open-source são mais rápidos",
+        x="Modelo",
+        y="Tempo médio (segundos)",
+        fill="Provider"
+    )
+)
+
+```
+
+## Cost (valid output)
+
+```{python}
+from structured_trts.extract import MODEL_CONFIGS
+df_models_tuple = pd.DataFrame(MODEL_CONFIGS)
+df_models = df_models_tuple.applymap(lambda x: x[1] if isinstance(x, tuple) else x)
+df_models.index = df_models_tuple.iloc[:,0].apply(lambda x: x[0])
+df_models = df_models.transpose().reset_index(drop=True)
+df_models = df_models.rename(columns={'name': 'model_name'})
+
+df_cost = (
+    df
+    .query("success == True")
+    .merge(df_models, on=['model_name', 'provider'])
+    .assign(
+        cost = lambda x: x['input_tokens'] * x['price_input_1M'] / 1e6 + x['output_tokens'] * x['price_output_1M'] / 1e6
+    )
+    .groupby(['model_name', 'provider'])
+    .agg(
+        n = ('success', 'count'),
+        avg_cost = ('cost', 'mean')
+    )
+    .reset_index()
+    .sort_values('avg_cost', ascending=False)
+)
+df_cost['provider'] = np.select(
+    [df_cost['provider'] == 'openai', df_cost['provider'] == 'gemini'],
+    ['OpenAI', 'Google Gemini'],
+    'Groq (OS models)'
+)
+df_cost['avg_cost'] = df_cost['avg_cost'].astype(float)
+
+(
+    p9.ggplot(df_cost, p9.aes(x='reorder(model_name, -avg_cost)', y='avg_cost', fill = 'provider')) +
+    p9.geom_col() +
+    p9.theme_minimal() +
+    p9.theme(axis_text_x=p9.element_text(rotation=45, hjust=1)) +
+    p9.scale_fill_manual(values=['#1f77b4', '#ff7f0e', '#2c602c']) +
+    p9.scale_y_continuous(labels=lambda x: [f'${y:.2f}' for y in x], breaks=np.arange(0, 1, 0.01)) +
+    p9.labs(
+        subtitle="Custo varia de acordo com tamanho do modelo",
+        x="Modelo",
+        y="Custo médio (USD)",
+        fill="Provider"
+    )
+)
+
+
+```
+
+```{python}
+import numpy as np
+df_accuracy = (
+    df
+    .query('id > 0 or success==False')
+    .filter(['processo', 'model_name', 'provider', 'gratuidade_correct', 'decision_type_correct', 'custas_correct', 'valor_total_decisao_correct'])
+    .melt(
+        id_vars=['processo', 'model_name', 'provider'], 
+        var_name='metric', 
+        value_name='value'
+    )
+    .replace({np.nan: 'nao'})
+    .query("value in ['sim', 'nao']")
+    .assign(
+        correct=lambda x: np.where(x['value'] == 'sim', 1, 0)
+    )
+    .groupby(['model_name', 'provider', 'metric'])
+    .agg(
+        n = ('value', 'count'),
+        accuracy = ('correct', 'mean')
+    )
+    .reset_index()
+    .sort_values('accuracy', ascending=False)
+)
+
+df_accuracy['provider'] = np.select(
+    [df_accuracy['provider'] == 'openai', df_accuracy['provider'] == 'gemini'],
+    ['OpenAI', 'Google Gemini'],
+    'Groq (OS models)'
+)
+
+df_accuracy['metric'] = np.select(
+    [df_accuracy['metric'] == 'gratuidade_correct', df_accuracy['metric'] == 'decision_type_correct', df_accuracy['metric'] == 'custas_correct'],
+    ['Gratuidade concedida', 'Tipo de decisão', 'Custas'],
+    'Valor total da decisão'
+)
+
+(
+    p9.ggplot(df_accuracy, p9.aes(x='reorder(model_name, accuracy)', y='accuracy', fill = 'provider')) +
+    p9.geom_col(position='dodge') +
+    p9.theme_bw() +
+    p9.theme(legend_position='bottom') +
+    p9.scale_fill_manual(values=['#1f77b4', '#ff7f0e', '#2c602c']) +
+    p9.facet_wrap('~metric') +
+    p9.scale_y_continuous(labels=lambda x: [f'{int(y*100)}%' for y in x]) +
+    p9.geom_hline(yintercept=1, linetype='dashed', color='gray') +
+    p9.labs(
+        subtitle="Acurácia por variável",
+        x="Modelo",
+        y="Acurácia (%)",
+        fill="Provider"
+    ) +
+    p9.coord_flip()
+)
+```
+
+```{python}
+df_accuracy_cost = (
+    df_accuracy
+    .groupby(['model_name', 'provider'])
+    .agg(accuracy = ('accuracy', 'mean'))
+    .reset_index()
+    .merge(df_cost, on=['model_name', 'provider'])
+)
+
+df_accuracy_cost
+
+(
+    p9.ggplot(df_accuracy_cost, p9.aes(x='avg_cost', y='accuracy', color='model_name', shape='provider')) +
+    p9.geom_point(size=5) +
+    p9.theme_bw() +
+    p9.scale_x_continuous(labels=lambda x: [f'${y:.2f}' for y in x]) +
+    p9.scale_y_continuous(labels=lambda x: [f'{int(y*100)}%' for y in x]) +
+    p9.labs(
+        subtitle="Acurácia por custo",
+        x="Custo médio (USD)",
+        y="Acurácia (%)",
+        color="Modelo",
+        shape="Provider"
+    )
+)
+```
+
+
+```{python}
 # Check if data/extracted directory exists
 extracted_dir = base_dir / "data/extracted"
 dfs = []
@@ -39,4 +290,22 @@ df_success_time = (
 )
 
 df_success_time
+```
+
+
+
+```{python}
+metadata = pd.read_parquet(base_dir / "data/metadata.parquet")
+```
+
+
+```{python}
+lens = []
+
+for i in range(len(metadata['metadata'])):
+    mm = metadata['metadata'].iloc[i]
+    if len(mm) > 0:
+        lens.append(len(mm[0]['assunto']))
+
+pd.Series(lens).value_counts()
 ```
