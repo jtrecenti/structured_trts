@@ -13,7 +13,7 @@ import json
 from structured_trts.extract import (
     run_extraction_batch, 
     MODEL_CONFIGS,
-    extract_with_chatlas,
+    extract_with_direct_api,
     load_prompt
 )
 import warnings
@@ -46,56 +46,47 @@ print("Available models:")
 for model in available_models:
     config = MODEL_CONFIGS[model]
     print(f"  - {model}: {config.name} ({config.provider})")
-
-# Select models to test (you can modify this list)
-models_to_test = [
-    "gpt-4.1-mini",  # Start with faster/cheaper models
-    "gemini-2.5-flash",
-    "gpt-oss-20b",
-    "llama-4-scout"
-    # Add more models as needed
-]
-
-print(f"\nModels selected for testing: {models_to_test}")
 ```
 
-## Test with Chatlas
+## Test with some models
 
 ```{python}
-# chatlas test
+prompt = load_prompt(str(prompt_path))
+row = df[df.index == 6]
+txt = row['txt_sentencas'].iloc[0]
+result = extract_with_direct_api(txt, prompt, "llama-4-scout")
+print(result.model_dump_json())
+```
+
+```{python}
 prompt = load_prompt(str(prompt_path))
 row = df[df.index == 3]
-txt = row['txt'].iloc[0]
-result = extract_with_chatlas(txt, prompt, "llama-4-scout")
-```
-
-extracted_data to json
-
-```{python}
-print(df_result['error_message'].iloc[0])
+txt = row['txt_sentencas'].iloc[0]
+result = extract_with_direct_api(txt, prompt, "gpt-4.1-mini")
+print(result.model_dump_json())
 ```
 
 ```{python}
-df_result = pd.DataFrame([result.model_dump()])
-df_result['input_type'] = 'full_text'
-df_result['processo'] = row['processo'].iloc[0]
-df_result['extracted_data'] = json.loads(result.extracted_data.model_dump_json())
-file_name = base_dir / f"data/{row['processo'].iloc[0]}_full_text.parquet"
-df_result.to_parquet(file_name)
+prompt = load_prompt(str(prompt_path))
+row = df[df.index == 3]
+txt = row['txt_sentencas'].iloc[0]
+result = extract_with_direct_api(txt, prompt, "gemini-2.5-flash")
+print(result.model_dump_json())
 ```
+
 
 ## Full Text Extraction
 
 ```{python}
 amostra = df[df['enc_len'] < 120000].copy()
-amostra = amostra.sample(n=10, random_state=42)
+amostra = amostra.sample(n=100, random_state=42)
 
 prompt = load_prompt(str(prompt_path))
 
 for index, row in amostra.iterrows():
     print(f"Processing {row['processo']}...")
     print(f"Input tokens: {row['enc_len']}")
-    for tipo in ['full_text', 'sentences_only']:
+    for tipo in ['sentences_only']:
         print(f"Processing {tipo}...")
         txt = row['txt'] if tipo == 'full_text' else row['txt_sentencas']
         df_all = []
@@ -103,7 +94,7 @@ for index, row in amostra.iterrows():
         if not f.exists():
             for model in available_models:
                 print(f"Processing {model}...")
-                result = extract_with_chatlas(txt, prompt, model)
+                result = extract_with_direct_api(txt, prompt, model)
                 df_result = pd.DataFrame([result.model_dump()])
                 if result.success:
                     df_result['extracted_data'] = [json.loads(result.extracted_data.model_dump_json())]
