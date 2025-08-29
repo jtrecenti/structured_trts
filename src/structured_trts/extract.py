@@ -6,25 +6,31 @@ from __future__ import annotations
 from typing import Literal, List, Optional
 from enum import Enum
 import time
-from pydantic import BaseModel
+import json
+from pydantic import BaseModel, Field
 from tqdm import tqdm
-import chatlas as ctl
 import tiktoken
 import pandas as pd
-
+from openai import OpenAI
+from groq import Groq
+from google import genai
+from google.genai import types
 
 # ---------- Enums: taxonomias e estados ----------
 
-
 class Gratuidade(Enum):
+    """Indica se a gratuidade foi concedida ao trabalhador."""
     CONCEDIDA = "concedida"
-    NAO_CONCEDIDA = "nao_concedida" 
+    NAO_CONCEDIDA = "nao_concedida"
+
 class DecisionType(Enum):
+    """Tipo de decisão."""
     SENTENCA_MERITO = "sentenca_merito"
     HOMOLOGACAO_ACORDO = "homologacao_acordo"
     EXTINCAO_SEM_MERITO = "extincao_sem_julgamento_merito"
 
 class DecisionOutcome(Enum):
+    """Resultado da decisão."""
     PROCEDENTE = "procedente"
     PARCIALMENTE_PROCEDENTE = "parcialmente_procedente"
     IMPROCEDENTE = "improcedente"
@@ -32,10 +38,12 @@ class DecisionOutcome(Enum):
     PREJUDICADO = "prejudicado"
 
 class Reflexos(Enum):
+    """Indica se houve reflexos para o pedido específico."""
     SIM = "sim"
     NAO = "nao"
 
 class ClaimType(Enum):
+    """Tipo de pedido."""
     AVISO_PREVIO_13994 = "(13994) Aviso Prévio"
     INTEGRACAO_EM_VERBAS_RESCISORIAS_13924 = "(13924) Integração em Verbas Rescisórias"
     VERBAS_RESCISORIAS_13970 = "(13970) Verbas Rescisórias"
@@ -177,25 +185,28 @@ class ClaimType(Enum):
 # ---------- Tipos de apoio ----------
 
 class Money(BaseModel):
-    amount: float
-    currency: str
-    is_liquidacao: bool
+    """Representa um valor monetário."""
+    amount: float = Field(description="Valor monetário em reais")
+    currency: str = Field(description="Moeda utilizada (geralmente BRL)")
+    is_liquidacao: Optional[bool] = Field(description="Indica se o valor é de liquidação")
 
 class ClaimDecision(BaseModel):
     """Decisão por pedido (núcleo da extração)."""
-    claim_type: ClaimType
-    requested_value: Optional[Money]
-    outcome: DecisionOutcome
-    awarded_value: Optional[Money]
-    reflexos: Optional[Reflexos]
+    claim_type: ClaimType = Field(description="Tipo de pedido, extraído dos metadados do processo ou da decisão")
+    outcome: DecisionOutcome = Field(description="Resultado da decisão, extraído do texto da decisão, provavelmente na parte do dispositivo ou da fundamentação/decisão")
+    valor_recebido: Optional[Money] = Field(description="Valor de indenização ou do acordo celebrado, específico do pedido, extraído do texto da decisão, provavelmente na parte do dispositivo ou da fundamentação/decisão")
+    reflexos: Optional[Reflexos] = Field(description="Indica se houve reflexos para o pedido específico, extraído do texto da decisão, provavelmente na parte do dispositivo ou da fundamentação/decisão")
+
 class LaborSentenceExtraction(BaseModel):
-    decision_type: DecisionType
-    claims: List[ClaimDecision]
-    custas: Optional[Money]
-    gratuidade: Optional[Gratuidade]
+    """Representa a extração de uma sentença em processo trabalhista."""
+    decision_type: DecisionType = Field(description="Tipo de decisão, extraído do texto da decisão, provavelmente na parte do dispositivo ou da fundamentação/decisão")
+    claims: List[ClaimDecision] = Field(description="Lista de pedidos e suas decisões, extraídos de todo o conteúdo da entrada")
+    custas: Optional[Money] = Field(description="Valor das custas processuais aplicadas ao caso, extraído do texto da decisão")
+    gratuidade: Optional[Gratuidade] = Field(description="Indica se a gratuidade foi concedida ao trabalhador, extraído do texto da decisão")
+    valor_total_decisao: Optional[Money] = Field(description="Valor de indenização total ou valor do acordo total, extraído dos textos disponíveis")
 
 class ExtractionResult(BaseModel):
-    """Result of extraction with metadata about the process."""
+    """Resultado da extração."""
     model_name: str
     provider: str
     input_tokens: int
@@ -208,75 +219,152 @@ class ExtractionResult(BaseModel):
 # ---------- Model Configurations ----------
 
 class ModelConfig(BaseModel):
+    """Configuração de um modelo."""
     name: str
     provider: Literal["openai", "gemini", "groq"]
     model_id: str
     max_tokens: Optional[int] = None
     temperature: float = 0.0
+    price_input_1M: float = 0.0
+    price_output_1M: float = 0.0
 
 # Predefined model configurations
 MODEL_CONFIGS = {
-    "gpt-4.1": ModelConfig(name="OpenAI GPT-4.1", provider="openai", model_id="gpt-4.1", temperature=0.0),
-    "gpt-4.1-mini": ModelConfig(name="OpenAI GPT-4.1-mini", provider="openai", model_id="gpt-4.1-mini", temperature=0.0),
-    "gpt-4.1-nano": ModelConfig(name="OpenAI GPT-4.1-nano", provider="openai", model_id="gpt-4.1-nano", temperature=0.0),
-    "gemini-2.5-pro": ModelConfig(name="Gemini 2.5 Pro", provider="gemini", model_id="gemini-2.5-pro", temperature=0.0),
-    "gemini-2.5-flash": ModelConfig(name="Gemini 2.5 Flash", provider="gemini", model_id="gemini-2.5-flash", temperature=0.0),
-    "gpt-oss-120b": ModelConfig(name="GPT OSS 120B", provider="groq", model_id="openai/gpt-oss-120b", temperature=0.0),
-    "gpt-oss-20b": ModelConfig(name="GPT OSS 20B", provider="groq", model_id="openai/gpt-oss-20b", temperature=0.0),
-    "llama-4-maverick": ModelConfig(name="Llama 4 Maverick", provider="groq", model_id="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0.0),
-    "llama-4-scout": ModelConfig(name="Llama 4 Scout", provider="groq", model_id="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.0),
-    "kimi-k2": ModelConfig(name="Kimi K2", provider="groq", model_id="moonshotai/kimi-k2-instruct", temperature=0.0),
+    "gpt-4.1": ModelConfig(name="OpenAI GPT-4.1", provider="openai", model_id="gpt-4.1", temperature=0.0, price_input_1M=3.0, price_output_1M=12.0),
+    "gpt-4.1-mini": ModelConfig(name="OpenAI GPT-4.1-mini", provider="openai", model_id="gpt-4.1-mini", temperature=0.0, price_input_1M=0.8, price_output_1M=3.2),
+    "gpt-4.1-nano": ModelConfig(name="OpenAI GPT-4.1-nano", provider="openai", model_id="gpt-4.1-nano", temperature=0.0, price_input_1M=0.2, price_output_1M=0.8),
+    "gemini-2.5-pro": ModelConfig(name="Gemini 2.5 Pro", provider="gemini", model_id="gemini-2.5-pro", temperature=0.0, price_input_1M=1.25, price_output_1M=10.0),
+    "gemini-2.5-flash": ModelConfig(name="Gemini 2.5 Flash", provider="gemini", model_id="gemini-2.5-flash", temperature=0.0, price_input_1M=0.3, price_output_1M=2.5),
+    "gpt-oss-120b": ModelConfig(name="GPT OSS 120B", provider="groq", model_id="openai/gpt-oss-120b", temperature=0.0, price_input_1M=0.15, price_output_1M=0.75),
+    "gpt-oss-20b": ModelConfig(name="GPT OSS 20B", provider="groq", model_id="openai/gpt-oss-20b", temperature=0.0, price_input_1M=0.10, price_output_1M=0.50),
+    "llama-4-maverick": ModelConfig(name="Llama 4 Maverick", provider="groq", model_id="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0.0, price_input_1M=0.20, price_output_1M=0.60),
+    "llama-4-scout": ModelConfig(name="Llama 4 Scout", provider="groq", model_id="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.0, price_input_1M=0.11, price_output_1M=0.34),
+    "kimi-k2": ModelConfig(name="Kimi K2", provider="groq", model_id="moonshotai/kimi-k2-instruct", temperature=0.0, price_input_1M=1.0, price_output_1M=3.0),
 }
 
 # ---------- Extraction Functions ----------
 
 def load_prompt(prompt_path: str) -> str:
-    """Load prompt from file."""
+    """Carrega o prompt do arquivo."""
     with open(prompt_path, 'r', encoding='utf-8') as f:
         return f.read()
 
 def token_count(text: str) -> int:
+    """Contagem de tokens."""
     enc = tiktoken.encoding_for_model("gpt-4o")
     return len(enc.encode(text))
 
-def extract_with_chatlas(text: str, prompt: str, model_key: str, max_retries: int = 3) -> ExtractionResult:
+def extract_with_direct_api(text: str, prompt: str, model_key: str) -> ExtractionResult:
     """
-    Extract data using Chatlas models.
+    Extração de dados usando APIs diretas (OpenAI, Google, Groq).
     """
     start_time = time.time()
     model_config = MODEL_CONFIGS[model_key]
-    if model_config.provider == "openai":
-        chat = ctl.ChatOpenAI(model=model_config.model_id, system_prompt=prompt)
-    elif model_config.provider == "gemini":
-        chat = ctl.ChatGoogle(model=model_config.model_id, system_prompt=prompt)
-    else:
-        chat = ctl.ChatGroq(model=model_config.model_id, system_prompt=prompt)
-
-    chat.set_model_params(
-        temperature=model_config.temperature,
-    )
+    # token count if model fails
+    input_tokens = token_count(prompt + text)
+    
     try:
-        response = chat.extract_data(text, data_model=LaborSentenceExtraction)
+        if model_config.provider == "openai":
+            result = _extract_openai(text, prompt, model_config)            
+        elif model_config.provider == "gemini":
+            result = _extract_gemini(text, prompt, model_config)
+        elif model_config.provider == "groq":
+            result = _extract_groq(text, prompt, model_config)
+        else:
+            raise ValueError(f"Unsupported provider: {model_config.provider}")
+
+        return ExtractionResult(
+            model_name=model_config.name,
+            provider=model_config.provider,
+            input_tokens=result['input_tokens'],
+            output_tokens=result['output_tokens'],
+            extraction_time_seconds=time.time() - start_time,
+            success=True,
+            extracted_data=result["data"]
+        )
+        
     except Exception as e:
         return ExtractionResult(
             model_name=model_config.name,
             provider=model_config.provider,
-            input_tokens=token_count(prompt + text),
+            input_tokens=input_tokens,
             output_tokens=0,
             extraction_time_seconds=time.time() - start_time,
             success=False,
             error_message=str(e)
         )
 
-    return ExtractionResult(
-        model_name=model_config.name,
-        provider=model_config.provider,
-        input_tokens=chat.get_tokens()[0]['tokens_total'],
-        output_tokens=chat.get_tokens()[1]['tokens_total'],
-        extraction_time_seconds=time.time() - start_time,
-        success=True,
-        extracted_data=response
+def _extract_openai(text: str, prompt: str, model_config: ModelConfig) -> dict:
+    """Extração usando OpenAI Responses API."""
+    client = OpenAI()
+
+    response = client.responses.parse(
+        model=model_config.model_id,
+        instructions=prompt,
+        input=text,
+        text_format=LaborSentenceExtraction,
+        temperature=model_config.temperature
     )
+
+    return {
+        "data": json.loads(response.output_parsed.model_dump_json()),
+        "input_tokens": getattr(response.usage, 'input_tokens', 0) if hasattr(response, 'usage') else 0,
+        "output_tokens": getattr(response.usage, 'output_tokens', 0) if hasattr(response, 'usage') else 0
+    }
+
+def _extract_gemini(text: str, prompt: str, model_config: ModelConfig) -> dict:
+    """Extração usando Google Gemini API."""
+    client = genai.Client()
+
+    response = client.models.generate_content(
+        model=model_config.model_id,
+        contents=text,
+        config=types.GenerateContentConfig(
+            system_instruction=prompt,
+            temperature=model_config.temperature,
+            response_mime_type="application/json",
+            response_schema=LaborSentenceExtraction
+        ),
+    )
+
+    prompt_tokens = getattr(response.usage_metadata, 'prompt_token_count', 0) if hasattr(response, 'usage_metadata') else 0
+    thought_tokens = getattr(response.usage_metadata, 'thoughts_token_count', 0) if hasattr(response, 'usage_metadata') else 0
+    candidate_tokens = getattr(response.usage_metadata, 'candidates_token_count', 0) if hasattr(response, 'usage_metadata') else 0
+    output_tokens = thought_tokens + candidate_tokens
+
+    return {
+        "data": json.loads(response.text),
+        "output_tokens": output_tokens,
+        "input_tokens": prompt_tokens
+    }
+
+def _extract_groq(text: str, prompt: str, model_config: ModelConfig) -> dict:
+    """Extração usando Groq API."""
+    client = Groq()
+
+    response = client.chat.completions.create(
+        model=model_config.model_id,
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text},
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "labor_decision",
+                "schema": LaborSentenceExtraction.model_json_schema()
+            }
+        },
+        temperature=model_config.temperature
+    )
+
+    data = json.loads(response.choices[0].message.content)
+
+    return {
+        "data": data,
+        "output_tokens": getattr(response.usage, 'completion_tokens', 0) if hasattr(response, 'usage') else 0,
+        "input_tokens": getattr(response.usage, 'prompt_tokens', 0) if hasattr(response, 'usage') else 0
+    }
 
 def run_extraction_batch(
     df: pd.DataFrame,
@@ -286,7 +374,7 @@ def run_extraction_batch(
     max_tokens: int = 120000,
     output_path: Optional[str] = None
 ) -> pd.DataFrame:
-    """Run extraction on a batch of texts with multiple models."""
+    """Realiza extração em lote de textos com múltiplos modelos."""
     
     # Load prompt
     prompt = load_prompt(prompt_path)
@@ -302,7 +390,7 @@ def run_extraction_batch(
         
         for model_key in models:
             try:
-                result = extract_with_chatlas(text, prompt, model_key)
+                result = extract_with_direct_api(text, prompt, model_key)
                 
                 # Convert to dict for storage
                 result_dict = {
@@ -316,9 +404,9 @@ def run_extraction_batch(
                     "error_message": result.error_message,
                     "extracted_data": result.extracted_data.model_dump() if result.extracted_data else None,
                 }
-                
+
                 results.append(result_dict)
-                
+
             except Exception as e:
                 # Log error and continue
                 error_dict = {
